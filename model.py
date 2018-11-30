@@ -1,11 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from dataset import CorpusLoader
+from helpers import device, load_model, save_model
 
 import torch.nn.init as init
 import numpy as np
-import time
+import time, sys
+
 
 
 class EntityNLM(nn.Module):
@@ -147,7 +150,7 @@ class EntityNLM(nn.Module):
     
     def register_predicted_entity(self, e_index):
         # this function registers entities to determine 
-        # if there is a free slot in the entitiy set
+        # if there is a free slot in the entity set
         new_max = max(int(e_index), self.max_entity_index)
         self.max_entity_index = new_max
 
@@ -158,7 +161,7 @@ class EntityNLM(nn.Module):
         self.max_entity_index = 0
 
 
-def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_interval=25, str_pattern='{}_{}_epoch_{}.pkl', rz_amplifier=1):
+def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_interval=25, str_pattern='{}_{}_epoch_{}.pkl', rz_amplifier=5):
     entity_offset = 1
 
     for epoch in range(1, epochs+1):
@@ -211,7 +214,7 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                 current_L = doc.L[t]
                 if current_L == 1:
                     # 1. 
-                    # last L equals 1, not continuing entity mention
+                    # last L equals 1: not continuing entity mention
                     
                     # predict next R
                     R_dist = model.get_next_R(h_t)
@@ -225,7 +228,7 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
 
                     
                     if next_R == 1:
-                        # next Token is within an entity mention
+                        # next token is within an entity mention
                         doc_count_R += 1
                         if R_dist.argmax():
                             # both True - correct pred
@@ -233,8 +236,8 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                             #R_loss += r_current_loss
                         else:
                             # false negative prediction
-                            # extra loss
-                            R_loss += r_current_loss * 10
+                            # extra loss to increase recall
+                            R_loss += r_current_loss * rz_amplifier
                             pass
 
                         
@@ -292,7 +295,7 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                 # 4. Advance the RNN on predicted token, here in training next token 
                 h_t, states = model.forward_rnn(doc.X[t+1], states)
                 h_t = h_t.squeeze(0)
-                # new hidden state of next token from here (h_t, previous was actually h_t-1)
+                # new hidden state of next token from here (h_t, previous was h_t-1)
                 
                 # 5. Update entity state
                 if next_R == 1:
@@ -304,7 +307,8 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                 # 6. Nothing toDo?
                 
             ## End of Paper Algorithm
-
+            
+            # calculate stats and divide loss values
             r_true_positive  += doc_r_true_positive
             r_false_positive += doc_r_false_positive
             count_R          += doc_count_R
@@ -331,18 +335,21 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
 
 
             if optimizer:
+                # optimization step
                 optimizer.zero_grad()
                 loss = X_loss + R_loss + E_loss + L_loss
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                 optimizer.step()
             if status_interval and i_doc % status_interval == 0:
+                # status output
                 r_prec   = r_true_positive / max((r_true_positive+r_false_positive), 1)
                 r_recall = r_true_positive / max(count_R, 1)
                 rf_score  = 2*((r_prec*r_recall)/max(r_prec+r_recall, 1))
                 print(f'Doc {i_doc}/{len(corpus)-1}: X_loss {X_epoch_loss / epoch_tokens:0.3}, R_loss {R_epoch_loss / epoch_r_div:0.3}, E_loss {E_epoch_loss / epoch_e_div:0.3}, L_loss {L_epoch_loss / epoch_l_div:0.3}, E_acc {count_E_correct/count_E:0.3}, R_prec {r_prec:0.3}, R_recall {r_recall:0.3}')
                 sys.stdout.flush()
         
+        # calulate readable time format
         seconds = round(time.time() - epoch_start)
         m, s = divmod(seconds, 60)
         h, m = divmod(m, 60)
@@ -351,28 +358,29 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
             print(f'Epoch {epoch} finished after {x_hour_and_}{m} minutes.')
         else:
             print(f'Evaluation on "{corpus.partition}" partition finished after {x_hour_and_}{m} minutes.')
+            
+        # calculate epoch stats: precision, recall and F-Score
         r_prec   = r_true_positive / max((r_true_positive+r_false_positive), 1)
         r_recall = r_true_positive / max(count_R, 1)
         rf_score  = 2*((r_prec*r_recall)/max(r_prec+r_recall, 1))
 
         print(f'Loss: X_loss {X_epoch_loss / epoch_tokens:0.3}, R_loss {R_epoch_loss / epoch_r_div:0.3}, E_loss {E_epoch_loss / epoch_e_div:0.3}, L_loss {L_epoch_loss / epoch_l_div:0.3}, E_acc {count_E_correct/count_E:0.3}, R_prec {r_prec:0.3}, R_recall {r_recall:0.3}, R_Fscore {rf_score:0.3}')
-        #print(f'GPU Mem: {round(torch.cuda.memory_allocated(0)/1024**3,1)}/{round(torch.cuda.max_memory_allocated(0)/1024**3,1)} GB, {round(torch.cuda.memory_cached(0)/1024**3,1)}/{round(torch.cuda.max_memory_cached(0)/1024**3,1)} GB')
         print()
-
+        
+        # if in train mode
         if optimizer:
+            # save model
             file_name = str_pattern.format(model.__class__.__name__, model.lstm.hidden_size, epoch)
             save_model(model, file_name)
             if eval_corpus:
+                # evaluate on evaluation corpus
                 with torch.no_grad():
                     model.eval()
                     run_nlm(model, eval_corpus, status_interval=None, rz_amplifier=rz_amplifier)
                     model.train()
 
 
-import torch, sys
-from dataset import CorpusLoader
-#from run_model import run_nlm, run_lme
-from helpers import device, load_model
+
 corpus = CorpusLoader(partition='train')
 eval_corpus = CorpusLoader(partition='dev')
 
@@ -380,8 +388,7 @@ d = 64
 model = EntityNLM(vocab_size=corpus.vocab_size, 
                         embedding_size=d, 
                         hidden_size=d,
-                        dropout=0.15).to(device)
+                        dropout=0.2).to(device)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-str_pattern='{}_{}_epoch_{}.pklt'
-run_nlm(model, corpus, optimizer, epochs=25, eval_corpus=eval_corpus, status_interval=250, rz_amplifier=1, str_pattern=str_pattern)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.005)
+run_nlm(model, corpus, optimizer, epochs=25, eval_corpus=eval_corpus, status_interval=250)
