@@ -10,7 +10,6 @@ import numpy as np
 import time, sys
 
 
-
 class EntityNLM(nn.Module):
     def __init__(self, vocab_size, embedding_size=256, hidden_size=256, num_layers=1, dropout=0.5, train_states=None, tied_embedding=None):
         super(EntityNLM, self).__init__()
@@ -31,8 +30,7 @@ class EntityNLM(nn.Module):
         self.r_embeddings = torch.nn.Parameter(torch.FloatTensor(2, hidden_size), requires_grad=True).to(device)
         # W_r is parameter matrix for the bilinear score for h_t−1 and r.
         self.W_r = nn.Bilinear(hidden_size, hidden_size, 1)
-        
-        
+       
         # W_length is the weight matrix for length prediction
         self.W_length = nn.Linear(2 * hidden_size, 25)    
         
@@ -75,7 +73,6 @@ class EntityNLM(nn.Module):
         
         self.W_e.weight.data.uniform_(*init_range)
         self.W_e.bias.data.fill_(0)
-        
         
     def forward_rnn(self, x, states):
         # Input: LongTensor with token indices
@@ -160,7 +157,6 @@ class EntityNLM(nn.Module):
         self.dist_features = torch.tensor([], dtype=torch.float, device=device)
         self.max_entity_index = 0
 
-
 def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_interval=25, str_pattern='{}_{}_epoch_{}.pkl', rz_amplifier=5):
     entity_offset = 1
 
@@ -199,7 +195,6 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
             doc_r_true_positive  = 0
             doc_r_false_positive = 0
             doc_count_R          = 0
-
             
             # iterate over document
             for t in range(doc.X.size(0)-1):      
@@ -209,7 +204,8 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                 next_R = doc.R[t+1] # next R type
                 next_L = doc.L[t+1] # next Length
                 
-                # Start Paper
+                # ***START PAPER ALGORITHM***
+                
                 # Define current value for L
                 current_L = doc.L[t]
                 if current_L == 1:
@@ -225,7 +221,6 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                     
                     # add division counter for R loss
                     r_div  += 1
-
                     
                     if next_R == 1:
                         # next token is within an entity mention
@@ -240,7 +235,6 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                             R_loss += r_current_loss * rz_amplifier
                             pass
 
-                        
                         # select the entity
                         E_dist = model.get_next_E(h_t, t)
                         # count for stats
@@ -259,8 +253,8 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                         # predict length of entity and calculate loss
                         L_dist = model.get_next_L(h_t, e_current)
                         L_loss += torch.nn.functional.cross_entropy(L_dist, next_L.view(-1))
-                        
                         l_div  += 1
+                        
                     else:
                         # only for stats and possibility to amplify loss
                         if R_dist.argmax():
@@ -289,9 +283,9 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                     pass
                 
                 # 3. Sample X, get distribution for next Token
-                
                 X_dist = model.get_next_X(h_t, e_current)
                 X_loss += torch.nn.functional.cross_entropy(X_dist, next_X.view(-1))
+                
                 # 4. Advance the RNN on predicted token, here in training next token 
                 h_t, states = model.forward_rnn(doc.X[t+1], states)
                 h_t = h_t.squeeze(0)
@@ -303,10 +297,9 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                     # set e_current to embedding e_t
                     e_current = model.get_entity_embedding(next_E)
                     
-                    
                 # 6. Nothing toDo?
                 
-            ## End of Paper Algorithm
+            # ***END PAPER ALGORITHM***
             
             # calculate stats and divide loss values
             r_true_positive  += doc_r_true_positive
@@ -331,8 +324,6 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
             epoch_r_div  += r_div
             epoch_l_div += l_div
             epoch_e_div += e_div
-
-
 
             if optimizer:
                 # optimization step
@@ -378,7 +369,6 @@ def run_nlm(model, corpus, optimizer=None, epochs=1, eval_corpus=None, status_in
                     model.eval()
                     run_nlm(model, eval_corpus, status_interval=None, rz_amplifier=rz_amplifier)
                     model.train()
-
 
 
 corpus = CorpusLoader(partition='train')
